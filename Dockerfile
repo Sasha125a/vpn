@@ -4,7 +4,6 @@ FROM ubuntu:22.04
 # Устанавливаем зависимости
 RUN apt-get update && apt-get install -y \
     g++ \
-    cmake \
     make \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -19,7 +18,8 @@ COPY server.cpp .
 RUN g++ -std=c++11 -o vpn-server server.cpp -lssl -lcrypto -lpthread
 
 # Открываем порты
-EXPOSE $PORT 8081
+# Render требует, чтобы приложение слушало порт из переменной окружения PORT
+EXPOSE 10000 8081
 
 # Запускаем сервер
 CMD ["./vpn-server"]
