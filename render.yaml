@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: vpn-server
+    env: docker
+    dockerfilePath: ./Dockerfile
+    port: 8081  # Health check порт
+    envVars:
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health
+    autoDeploy: true
