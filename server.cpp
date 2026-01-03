@@ -11,6 +11,8 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <fcntl.h>
+#include <signal.h>  // Добавлен для signal() и SIG*
+#include <cstdlib>   // Для std::getenv()
 
 class VPNServer {
 private:
@@ -79,6 +81,9 @@ public:
             bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
             
             if (bytes_read <= 0) {
+                if (bytes_read < 0) {
+                    std::cerr << "Read error from " << client_ip << std::endl;
+                }
                 break;
             }
             
@@ -87,7 +92,11 @@ public:
                       << std::string(buffer, bytes_read) << std::endl;
             
             // Echo back (in real VPN, you would route traffic)
-            write(client_fd, buffer, bytes_read);
+            ssize_t bytes_written = write(client_fd, buffer, bytes_read);
+            if (bytes_written < 0) {
+                std::cerr << "Write error to " << client_ip << std::endl;
+                break;
+            }
         }
         
         close(client_fd);
@@ -124,6 +133,7 @@ public:
         
         // Close server socket to break accept()
         if (server_fd >= 0) {
+            shutdown(server_fd, SHUT_RDWR);
             close(server_fd);
             server_fd = -1;
         }
@@ -152,12 +162,16 @@ void start_health_check_endpoint() {
         health_addr.sin_addr.s_addr = INADDR_ANY;
         health_addr.sin_port = htons(8081);  // Health check порт
         
+        int opt = 1;
+        setsockopt(health_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        
         if (bind(health_fd, (struct sockaddr*)&health_addr, sizeof(health_addr)) >= 0) {
             listen(health_fd, 5);
             
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            
             while (true) {
-                struct sockaddr_in client_addr;
-                socklen_t client_len = sizeof(client_addr);
                 int client = accept(health_fd, (struct sockaddr*)&client_addr, &client_len);
                 
                 if (client >= 0) {
@@ -169,11 +183,24 @@ void start_health_check_endpoint() {
                     write(client, response, strlen(response));
                     close(client);
                 }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
+        close(health_fd);
     });
     
     health_thread.detach();
+}
+
+// Глобальный указатель для обработки сигналов
+VPNServer* global_server = nullptr;
+
+void signal_handler(int sig) {
+    std::cout << "\nReceived signal " << sig << ", shutting down..." << std::endl;
+    if (global_server) {
+        global_server->stop();
+    }
+    exit(0);
 }
 
 int main() {
@@ -184,9 +211,17 @@ int main() {
     
     // Получаем порт из переменной окружения (Render автоматически устанавливает PORT)
     const char* env_port = std::getenv("PORT");
-    int port = env_port ? std::stoi(env_port) : 10000;
+    int port = 10000; // порт по умолчанию
+    if (env_port != nullptr) {
+        try {
+            port = std::stoi(env_port);
+        } catch (const std::exception& e) {
+            std::cerr << "Invalid PORT environment variable, using default: " << port << std::endl;
+        }
+    }
     
     VPNServer server(port);
+    global_server = &server;
     
     if (!server.initialize()) {
         std::cerr << "Failed to initialize VPN server" << std::endl;
@@ -194,17 +229,13 @@ int main() {
     }
     
     // Обработка сигналов для graceful shutdown
-    signal(SIGINT, [](int sig) {
-        std::cout << "\nShutting down..." << std::endl;
-        exit(0);
-    });
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     
-    signal(SIGTERM, [](int sig) {
-        std::cout << "\nReceived SIGTERM, shutting down..." << std::endl;
-        exit(0);
-    });
+    std::cout << "VPN Server is running on port " << port << std::endl;
+    std::cout << "Health check available on port 8081" << std::endl;
+    std::cout << "Press Ctrl+C to stop." << std::endl;
     
-    std::cout << "VPN Server is running. Press Ctrl+C to stop." << std::endl;
     server.start();
     
     return 0;
